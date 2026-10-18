@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+
+	"inference-gateway/internal/metrics"
 )
 
 type prompt struct {
@@ -58,11 +60,16 @@ func Completion(ollamaURL string) http.HandlerFunc {
 		var out struct {
 			Model    string `json:"model"`
 			Response string `json:"response"`
+			metrics.LLMStats
 		}
 		if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
 			http.Error(w, "bad response from ollama", http.StatusBadGateway)
 			return
 		}
-		json.NewEncoder(w).Encode(out)
+		metrics.ObserveLLM(out.Model, out.LLMStats)
+		json.NewEncoder(w).Encode(struct {
+			Model    string `json:"model"`
+			Response string `json:"response"`
+		}{out.Model, out.Response})
 	}
 }

@@ -20,8 +20,7 @@ curl -X POST localhost:8080/completion -d '{"model":"qwen3:14b","prompt":"Say hi
 **In Docker** (2 Ollama replicas on the GPU behind nginx, gateway on `:8080`):
 
 ```sh
-docker compose up -d --build
-docker compose exec ollama ollama pull qwen3:4b-instruct   # once; shared by all replicas
+docker compose up -d --build   # first build bakes qwen3:4b-instruct into the Ollama image (deploy/ollama.Dockerfile)
 curl -X POST localhost:8080/completion -d '{"model":"qwen3:4b-instruct","prompt":"Say hi"}'
 ```
 
@@ -30,9 +29,11 @@ curl -X POST localhost:8080/completion -d '{"model":"qwen3:4b-instruct","prompt"
 | `PORT`       | `8080`                   | gateway port       |
 | `OLLAMA_URL` | `http://localhost:11434` | where Ollama lives |
 
+Dashboards: Grafana at <http://localhost:3000> (admin / admin to edit), Prometheus at <http://localhost:9090>.
+
 ## Roadmap
 
-Tick a box when the step works end to end.
+Tick a box when the step works end to end. Interview questions for each step: [docs/interview-prep.md](docs/interview-prep.md).
 
 ### 0. Foundation
 - [x] HTTP server with JSON logging and graceful shutdown
@@ -43,7 +44,7 @@ Tick a box when the step works end to end.
 - [x] Docker: gateway image, Ollama replicas on the GPU, nginx load balancer
 
 ### 1. Conversations
-- [ ] `POST /v1/chat/completions` taking a `messages` history (OpenAI-compatible) → Ollama `/api/chat`
+- [x] `POST /v1/chat/completions` taking a `messages` history (OpenAI-compatible) → Ollama `/api/chat`
 
 ### 2. Streaming
 - [ ] Stream tokens to the client as they're generated (SSE) instead of waiting for the full answer
@@ -66,6 +67,11 @@ Tick a box when the step works end to end.
 
 ### 7. Model routing
 - [ ] Send quick requests to a small model and hard ones to `qwen3:14b`
+
+### Observability
+- [x] Prometheus + Grafana (`localhost:3000`, dashboard "Inference Gateway"), GPU exporter, node exporter
+- [x] Gateway `/metrics`: request count, latency histogram (P50/P95/P99), TTFB, in-flight
+- [x] LLM metrics from Ollama stats: tokens in/out, load / prefill / decode time, tokens per second
 
 ### 8. Ops
 - [ ] API keys

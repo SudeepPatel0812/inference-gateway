@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"inference-gateway/internal/config"
+	"inference-gateway/internal/metrics"
 	"inference-gateway/internal/routes"
 	"log/slog"
 	"net/http"
@@ -32,7 +33,7 @@ func run(log *slog.Logger) error {
 
 	srv := &http.Server{
 		Addr:    ":" + cfg.Port,
-		Handler: routes.Routes(cfg),
+		Handler: metrics.Middleware(routes.Routes(cfg)),
 	}
 
 	srvErr := make(chan error, 1)
