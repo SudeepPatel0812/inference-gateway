@@ -31,6 +31,26 @@ curl -X POST localhost:8080/completion -d '{"model":"qwen3:4b-instruct","prompt"
 
 Dashboards: Grafana at <http://localhost:3000> (admin / admin to edit), Prometheus at <http://localhost:9090>.
 
+## API
+
+| Method & path | What it does |
+|---|---|
+| `GET /health` | liveness check → `{"status": "ok"}` |
+| `GET /metrics` | Prometheus metrics |
+| `POST /completion` | single prompt → `{"model", "response"}` |
+| `POST /v1/chat/completions` | OpenAI-style chat; send the whole `messages` history; `"stream": true` for SSE |
+
+**PowerShell tip:** put the JSON body in a file — inline JSON gets mangled by PowerShell quoting.
+
+```powershell
+'{"model":"qwen3:4b-instruct","stream":true,"messages":[{"role":"user","content":"Explain Go channels"}]}' | Set-Content -Encoding ascii chat.json
+curl.exe -N -X POST localhost:8080/v1/chat/completions -H "Content-Type: application/json" --data-binary "@chat.json"
+```
+
+- Continue a conversation by appending the model's reply as `{"role":"assistant",...}` and your next
+  `{"role":"user",...}`; the last message must be from the user.
+- `-Encoding ascii` (not `utf8`): Windows PowerShell's UTF-8 adds a BOM that the JSON decoder rejects.
+
 ## Roadmap
 
 Tick a box when the step works end to end. Interview questions for each step: [docs/interview-prep.md](docs/interview-prep.md).
@@ -47,10 +67,16 @@ Tick a box when the step works end to end. Interview questions for each step: [d
 - [x] `POST /v1/chat/completions` taking a `messages` history (OpenAI-compatible) → Ollama `/api/chat`
 
 ### 2. Streaming
-- [ ] Stream tokens to the client as they're generated (SSE) instead of waiting for the full answer
+- [x] Stream tokens to the client as they're generated (SSE) instead of waiting for the full answer — send `"stream": true`
 
 ### 3. Tool use / agent loop
-- [ ] Model requests a tool → gateway runs it → result goes back to the model → repeat until done
+Model requests a tool → gateway runs it → result goes back to the model → repeat until done.
+- [ ] Define a first tool (`get_current_time`) and send its JSON schema to Ollama in `tools`
+- [ ] Detect `tool_calls` in the model's reply, run the matching Go function
+- [ ] Append the result as a `{"role":"tool"}` message and call the model again
+- [ ] Loop until the model answers in plain text, with a max-iterations guard
+- [ ] Second tool with arguments (`calculator`) — validate arguments before running
+- [ ] Metrics: tool calls by tool name and outcome, loop iterations per request
 
 ### 4. Tools
 - [ ] Read / write files

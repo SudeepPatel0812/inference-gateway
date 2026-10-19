@@ -212,6 +212,58 @@ only reaches ready instances, and client retries with backoff for idempotent cal
 
 ---
 
+## Step 2 — Streaming
+
+Measured here (`qwen3:4b-instruct`, ~250-word answer): streaming first byte **0.06 s** vs
+non-streaming **2.8 s**; total time the same (~2.7 s).
+
+### Q24. Why stream LLM responses? Does it make generation faster?
+**Answer:** It doesn't make generation faster — total time is unchanged (2.6–2.8 s both ways
+here). It makes the *perceived* latency tiny: users see text after time-to-first-token (0.06 s
+here, ~45× sooner) and read while the rest is generated. Streaming also lets clients cancel early
+and keeps long requests from looking hung behind timeouts.
+
+### Q25. SSE vs WebSockets vs long polling for token streaming?
+**Answer:** **SSE** (Server-Sent Events) is plain HTTP: one long response with `data: …\n\n`
+events, server → client only. That's exactly the shape of token streaming, it works through
+proxies and load balancers, and browsers reconnect automatically. That's why OpenAI and Anthropic
+use it. **WebSockets** are bidirectional — worth it for voice or interactive agents sending input
+mid-stream, but they need upgrade handling and sticky connections. **Long polling** adds a round
+trip per chunk; no reason to use it here.
+
+### Q26. How does your gateway turn Ollama's stream into SSE?
+**Answer:** Ollama streams **NDJSON** (one JSON object per line). The gateway reads lines with
+`bufio.Scanner`, converts each to an OpenAI chunk (`choices[0].delta.content` — `delta` because
+it's only the new piece), writes `data: <json>\n\n` and calls `Flush()` so it leaves the buffer
+immediately. The last Ollama line has `done: true` and the token stats: we record metrics, send a
+chunk with `finish_reason`, then `data: [DONE]`.
+
+### Q27. What breaks streaming in production?
+**Answer:** **Buffering** anywhere on the path: Go's response writer (needs `Flush()`), a
+middleware wrapper that hides `http.Flusher` (ours passes `Flush` through on purpose), nginx
+(`proxy_buffering off`), CDNs, and compression (gzip buffers). **Timeouts**: idle/read timeouts on
+load balancers can cut long streams — send keep-alive comments if needed. **HTTP/1.1 connection
+limits** in browsers (6 per host) for many parallel streams.
+
+### Q28. The model fails halfway through a stream. What does the client see?
+**Answer:** The `200 OK` and headers are already sent, so you can't change the status code.
+The error has to go **in-band**: we send `data: {"error":{"message":…}}` and close *without*
+`[DONE]`, so clients can tell a complete answer from a cut-off one. Same if Ollama's connection
+drops (scanner error). Client should treat "no `[DONE]`" as a failure and may retry.
+
+### Q29. The user closes the tab mid-answer. What happens to the GPU?
+**Answer:** The write to the client fails, `streamChat` returns, and because the Ollama request
+was made with `r.Context()`, Go cancels it — Ollama stops generating. Without context
+propagation the GPU would keep producing tokens nobody reads, wasting capacity on every abandoned chat.
+
+### Q30. How does streaming change your metrics?
+**Answer:** TTFB becomes **time to first token** (our recorder notes the first write; we
+deliberately don't flush headers early, so the first write *is* the first token). Total duration
+still measures the whole generation. Track both: TTFT for user experience, total duration and
+tokens/s for capacity. Also watch in-flight requests — streams hold connections open longer.
+
+---
+
 ## System design prompts to practise
 You'll be able to answer these by the end of the roadmap:
 - Design an LLM gateway for 1,000 internal users (→ steps 0, 2, 7, 8)
