@@ -5,7 +5,7 @@ import { streamChat, type Message } from "./stream";
 
 // The Docker stack only has qwen3:4b-instruct; qwen3:14b exists only on the Windows Ollama
 // (run the gateway with `go run ./cmd/server` to use it).
-const MODELS = ["qwen3:4b-instruct", "qwen3:14b"];
+const MODELS = ["qwen3:8b", "qwen3:14b"];
 
 type Turn = Message & {
   ttft?: number; // seconds to the first token

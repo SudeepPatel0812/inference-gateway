@@ -96,7 +96,7 @@ Model requests a tool → gateway runs it → result goes back to the model → 
     (`a`, `b`, `op`), `fetch_url` (HTTP GET; blocks private/internal addresses against SSRF,
     10 s timeout, 1 MB read limit, returns ≤ 4000 chars of text)
 - [x] Metrics: tool calls by tool name and outcome, loop iterations per request (Grafana row "Tools")
-- [ ] Tools in streaming mode: forward text, run tools when a stream ends with `tool_calls`, open the next stream
+- [x] Tools in streaming mode: forward text, run tools when a stream reports `tool_calls`, open the next stream (one SSE response to the client)
 
 ### 4. Tools
 - [ ] Read / write files

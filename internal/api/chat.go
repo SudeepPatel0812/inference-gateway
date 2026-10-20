@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -99,43 +100,65 @@ func Chat(ollamaURL string) http.HandlerFunc {
 			return
 		}
 
-		body, err := json.Marshal(map[string]any{
-			"model":      in.Model,
-			"messages":   in.Messages,
-			"stream":     in.Stream,
-			"think":      in.Think,
-			"keep_alive": "30m",
-			"options":    map[string]any{"num_ctx": 8192},
-		})
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+		// streaming: one SSE response to the client, one Ollama stream per tool round behind it
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("Cache-Control", "no-cache")
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			http.Error(w, "streaming unsupported", http.StatusInternalServerError)
 			return
 		}
-
-		req, err := http.NewRequestWithContext(r.Context(), http.MethodPost, ollamaURL+"/api/chat", bytes.NewReader(body))
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-		req.Header.Set("Content-Type", "application/json")
-
-		resp, err := http.DefaultClient.Do(req)
-		if err != nil {
-			http.Error(w, "ollama unreachable", http.StatusBadGateway)
-			return
-		}
-		defer resp.Body.Close()
-
-		w.Header().Set("Content-Type", "application/json")
-
-		// pass Ollama errors (e.g. unknown model) through unchanged
-		if resp.StatusCode != http.StatusOK {
-			w.WriteHeader(resp.StatusCode)
-			io.Copy(w, resp.Body)
-			return
+		// once anything is written the 200 is sent, so later errors can only go inside the stream
+		fail := func(msg string) {
+			writeEvent(w, flusher, map[string]any{"error": map[string]string{"message": msg}})
 		}
 
-		streamChat(w, resp.Body)
+		messages := in.Messages
+		for round := 0; ; round++ {
+			body, err := openStream(r.Context(), ollamaURL, in.Model, in.Think, messages)
+			if err != nil {
+				if round == 0 { // nothing sent yet: still a real HTTP error (e.g. unknown model)
+					http.Error(w, err.Error(), http.StatusBadGateway)
+				} else {
+					fail(err.Error())
+				}
+				return
+			}
+			reply, reason, err := streamRound(w, flusher, body)
+			body.Close()
+			if err != nil {
+				fail(err.Error())
+				return
+			}
+
+			// no tool calls: this round's text was the final answer
+			if len(reply.ToolCalls) == 0 {
+				metrics.ObserveRounds(round)
+				writeEvent(w, flusher, streamChunk{
+					Model:   in.Model,
+					Choices: []streamChoice{{Delta: message{Role: "assistant"}, FinishReason: &reason}},
+				})
+				w.Write([]byte("data: [DONE]\n\n"))
+				flusher.Flush()
+				return
+			}
+
+			if round == maxToolRounds {
+				metrics.ObserveRounds(round)
+				fail("model kept calling tools; gave up after max rounds")
+				return
+			}
+
+			// same as the non-streaming loop: the model's order once, then one result per tool
+			messages = append(messages, reply)
+			for _, order := range reply.ToolCalls {
+				result, runErr := tools.Run(order.Function.Name, order.Function.Arguments)
+				if runErr != nil {
+					result = "error: " + runErr.Error()
+				}
+				messages = append(messages, message{Role: "tool", ToolName: order.Function.Name, Content: result})
+			}
+		}
 	}
 }
 
@@ -163,17 +186,13 @@ type streamChoice struct {
 	FinishReason *string `json:"finish_reason"` // nil → null until the last chunk, like OpenAI
 }
 
-// streamChat reads Ollama's stream line by line and forwards each piece to the client
-// as a Server-Sent Event. The first write is the first token, so TTFB = time to first token.
-func streamChat(w http.ResponseWriter, body io.Reader) {
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-
-	flusher, ok := w.(http.Flusher)
-	if !ok {
-		http.Error(w, "streaming unsupported", http.StatusInternalServerError)
-		return
-	}
+// streamRound forwards one Ollama stream to the client as SSE text chunks and returns what the
+// model did this round: its full message (all streamed text + any tool calls) and why it stopped.
+// It never sends [DONE]: only the caller knows whether another round follows.
+// The first write is the first token, so the TTFB metric measures time to first token.
+func streamRound(w http.ResponseWriter, flusher http.Flusher, body io.Reader) (message, string, error) {
+	var text string       // everything streamed this round; the next round needs it in the history
+	var calls []toolsCall // tool calls can come on any line (their own line or the done line)
 
 	scanner := bufio.NewScanner(body)
 	for scanner.Scan() { // waits for each new line from Ollama
@@ -182,39 +201,39 @@ func streamChat(w http.ResponseWriter, body io.Reader) {
 			continue // skip a broken line
 		}
 
-		// 1. Ollama failed: the 200 is already sent, so report the error inside the stream
+		// 1. Ollama failed: the caller reports it
 		if chunk.Error != "" {
-			writeEvent(w, flusher, map[string]any{"error": map[string]string{"message": chunk.Error}})
-			return
+			return message{}, "", errors.New(chunk.Error)
 		}
 
-		// 2. Last line: record metrics, send the finish reason, then [DONE]
+		calls = append(calls, chunk.Message.ToolCalls...)
+
+		// 2. Last line: token stats arrive here; the round is over
 		if chunk.Done {
 			metrics.ObserveLLM(chunk.Model, chunk.LLMStats)
-			reason := chunk.DoneReason
-			writeEvent(w, flusher, streamChunk{
-				Model:   chunk.Model,
-				Choices: []streamChoice{{Delta: message{Role: "assistant"}, FinishReason: &reason}},
-			})
-			w.Write([]byte("data: [DONE]\n\n"))
-			flusher.Flush()
-			return
+			reply := message{Role: "assistant", Content: text, ToolCalls: calls}
+			return reply, chunk.DoneReason, nil
 		}
 
-		// 3. Normal line: forward the new piece of text
+		// 3. Normal line: forward the new text right away, and remember it
+		if chunk.Message.Content == "" {
+			continue
+		}
+		text += chunk.Message.Content
 		err := writeEvent(w, flusher, streamChunk{
 			Model:   chunk.Model,
-			Choices: []streamChoice{{Delta: chunk.Message}},
+			Choices: []streamChoice{{Delta: message{Role: "assistant", Content: chunk.Message.Content}}},
 		})
 		if err != nil {
-			return // client disconnected; r.Context() also cancels the Ollama call
+			return message{}, "", err // client disconnected; r.Context() also cancels the Ollama call
 		}
 	}
 
 	// the loop ended without a done line: Ollama crashed or the connection dropped
 	if err := scanner.Err(); err != nil {
-		writeEvent(w, flusher, map[string]any{"error": map[string]string{"message": "stream interrupted: " + err.Error()}})
+		return message{}, "", fmt.Errorf("stream interrupted: %w", err)
 	}
+	return message{}, "", errors.New("stream ended without a done line")
 }
 
 // writeEvent sends one SSE event ("data: <json>" + a blank line) and flushes it to the client now.
@@ -277,4 +296,38 @@ func ask(ctx context.Context, ollamaURL, model string, think bool, messages []me
 	}
 	metrics.ObserveLLM(reply.Model, reply.LLMStats)
 	return reply, nil
+}
+
+// openStream starts a streaming chat request (with the tool menu) and returns Ollama's open
+// response body, which the caller reads with streamRound and then closes.
+func openStream(ctx context.Context, ollamaURL, model string, think bool, messages []message) (io.ReadCloser, error) {
+	body, err := json.Marshal(map[string]any{
+		"model":      model,
+		"messages":   messages,
+		"stream":     true,
+		"think":      think,
+		"keep_alive": "30m",
+		"options":    map[string]any{"num_ctx": 8192},
+		"tools":      tools.Definitions(), // the menu
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, ollamaURL+"/api/chat", bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("ollama unreachable: %w", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		msg, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		return nil, fmt.Errorf("ollama returned %d: %s", resp.StatusCode, msg)
+	}
+	return resp.Body, nil // no Close here: the stream is still being written
 }
