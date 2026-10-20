@@ -848,7 +848,7 @@
     },
     {
       "type": "row",
-      "title": "GPU",
+      "title": "Tools (agent loop)",
       "id": 20,
       "collapsed": false,
       "gridPos": {
@@ -860,8 +860,302 @@
     },
     {
       "type": "timeseries",
-      "title": "GPU utilization",
+      "title": "Tool calls / s by tool and outcome",
       "id": 21,
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "Which tools the model uses. \"unknown\" = the model asked for a tool that does not exist.",
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 0,
+        "y": 50
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 10,
+            "spanNulls": true
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum by (tool, outcome) (rate(llm_tool_calls_total[$__rate_interval]))",
+          "legendFormat": "{{tool}} {{outcome}}",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "mean",
+            "max",
+            "lastNotNull"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Tool error rate by tool",
+      "id": 22,
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "Bad arguments, blocked URLs, timeouts. Errors go back to the model as text so it can recover.",
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 8,
+        "y": 50
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 10,
+            "spanNulls": true
+          },
+          "min": 0,
+          "max": 1
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum by (tool) (rate(llm_tool_calls_total{outcome=\"error\"}[$__rate_interval])) / sum by (tool) (rate(llm_tool_calls_total[$__rate_interval]))",
+          "legendFormat": "{{tool}}",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "mean",
+            "max",
+            "lastNotNull"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Tool duration P95 by tool",
+      "id": 23,
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "fetch_url is network-bound (10 s timeout); calculator and time are microseconds.",
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 16,
+        "y": 50
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 10,
+            "spanNulls": true
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "histogram_quantile(0.95, sum by (le, tool) (rate(llm_tool_duration_seconds_bucket[$__rate_interval])))",
+          "legendFormat": "p95 {{tool}}",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "mean",
+            "max",
+            "lastNotNull"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Tool rounds per request",
+      "id": 24,
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "0 = answered without tools. Hitting 5 (maxToolRounds) means the model got stuck calling tools.",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 58
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 10,
+            "spanNulls": true
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "histogram_quantile(0.5, sum by (le) (rate(llm_agent_rounds_bucket[$__rate_interval])))",
+          "legendFormat": "p50",
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(llm_agent_rounds_bucket[$__rate_interval])))",
+          "legendFormat": "p95",
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum(rate(llm_agent_rounds_sum[$__rate_interval])) / sum(rate(llm_agent_rounds_count[$__rate_interval]))",
+          "legendFormat": "avg",
+          "refId": "C"
+        }
+      ],
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "mean",
+            "max",
+            "lastNotNull"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Requests needing tools",
+      "id": 25,
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 58
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 10,
+            "spanNulls": true
+          },
+          "min": 0,
+          "max": 1
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "1 - sum(rate(llm_agent_rounds_bucket{le=\"0\"}[$__rate_interval])) / sum(rate(llm_agent_rounds_count[$__rate_interval]))",
+          "legendFormat": "share with \u22651 tool round",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "mean",
+            "max",
+            "lastNotNull"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      }
+    },
+    {
+      "type": "row",
+      "title": "GPU",
+      "id": 26,
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 66
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "GPU utilization",
+      "id": 27,
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -871,7 +1165,7 @@
         "h": 8,
         "w": 6,
         "x": 0,
-        "y": 50
+        "y": 67
       },
       "fieldConfig": {
         "defaults": {
@@ -915,7 +1209,7 @@
     {
       "type": "timeseries",
       "title": "GPU memory",
-      "id": 22,
+      "id": 28,
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -925,7 +1219,7 @@
         "h": 8,
         "w": 6,
         "x": 6,
-        "y": 50
+        "y": 67
       },
       "fieldConfig": {
         "defaults": {
@@ -976,7 +1270,7 @@
     {
       "type": "timeseries",
       "title": "GPU temperature",
-      "id": 23,
+      "id": 29,
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -986,7 +1280,7 @@
         "h": 8,
         "w": 6,
         "x": 12,
-        "y": 50
+        "y": 67
       },
       "fieldConfig": {
         "defaults": {
@@ -1028,7 +1322,7 @@
     {
       "type": "timeseries",
       "title": "GPU power draw",
-      "id": 24,
+      "id": 30,
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -1038,7 +1332,7 @@
         "h": 8,
         "w": 6,
         "x": 18,
-        "y": 50
+        "y": 67
       },
       "fieldConfig": {
         "defaults": {
@@ -1080,19 +1374,19 @@
     {
       "type": "row",
       "title": "System (Docker VM) and gateway process",
-      "id": 25,
+      "id": 31,
       "collapsed": false,
       "gridPos": {
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 58
+        "y": 75
       }
     },
     {
       "type": "timeseries",
       "title": "CPU usage (Docker VM, all containers)",
-      "id": 26,
+      "id": 32,
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -1102,7 +1396,7 @@
         "h": 8,
         "w": 6,
         "x": 0,
-        "y": 59
+        "y": 76
       },
       "fieldConfig": {
         "defaults": {
@@ -1146,7 +1440,7 @@
     {
       "type": "timeseries",
       "title": "Memory used (Docker VM)",
-      "id": 27,
+      "id": 33,
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -1156,7 +1450,7 @@
         "h": 8,
         "w": 6,
         "x": 6,
-        "y": 59
+        "y": 76
       },
       "fieldConfig": {
         "defaults": {
@@ -1207,7 +1501,7 @@
     {
       "type": "timeseries",
       "title": "Gateway CPU (cores)",
-      "id": 28,
+      "id": 34,
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -1217,7 +1511,7 @@
         "h": 8,
         "w": 6,
         "x": 12,
-        "y": 59
+        "y": 76
       },
       "fieldConfig": {
         "defaults": {
@@ -1259,7 +1553,7 @@
     {
       "type": "timeseries",
       "title": "Gateway memory & goroutines",
-      "id": 29,
+      "id": 35,
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -1269,7 +1563,7 @@
         "h": 8,
         "w": 6,
         "x": 18,
-        "y": 59
+        "y": 76
       },
       "fieldConfig": {
         "defaults": {

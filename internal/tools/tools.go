@@ -2,6 +2,9 @@ package tools
 
 import (
 	"fmt"
+	"time"
+
+	"inference-gateway/internal/metrics"
 )
 
 type Tool struct {
@@ -36,12 +39,19 @@ func Definitions() []map[string]any {
 	return defs
 }
 
+// Run is the single path every tool call takes, so it's where tool metrics are recorded.
 func Run(name string, args map[string]any) (string, error) {
+	start := time.Now()
 	tool, ok := Registry[name]
 	if !ok {
-		return "", fmt.Errorf("unknown tool %q", name)
+		err := fmt.Errorf("unknown tool %q", name)
+		// label "unknown", never the model's made-up name: each new label value is a new time series
+		metrics.ObserveTool("unknown", time.Since(start), err)
+		return "", err
 	}
-	return tool.Run(args)
+	out, err := tool.Run(args)
+	metrics.ObserveTool(name, time.Since(start), err)
+	return out, err
 }
 
 // Arguments come from the model, so every tool validates them like user input.

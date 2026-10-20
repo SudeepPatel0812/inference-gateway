@@ -65,7 +65,8 @@ func Chat(ollamaURL string) http.HandlerFunc {
 				return
 			}
 
-			for round := 0; round < maxToolRounds && len(reply.Message.ToolCalls) > 0; round++ {
+			round := 0 // declared outside the loop so it can be recorded afterwards
+			for ; round < maxToolRounds && len(reply.Message.ToolCalls) > 0; round++ {
 				messages = append(messages, reply.Message)
 				for _, order := range reply.Message.ToolCalls {
 					result, runErr := tools.Run(order.Function.Name, order.Function.Arguments)
@@ -81,6 +82,8 @@ func Chat(ollamaURL string) http.HandlerFunc {
 					return
 				}
 			}
+
+			metrics.ObserveRounds(round) // before the give-up check, so stuck requests are counted too
 
 			if len(reply.Message.ToolCalls) > 0 {
 				http.Error(w, "model kept calling tools; gave up after max rounds", http.StatusInternalServerError)

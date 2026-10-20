@@ -11,7 +11,11 @@ import (
 )
 
 // LLM requests take seconds to minutes; the default buckets stop at 10s and would hide the tail.
-var buckets = []float64{0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 20, 30, 60, 120}
+var (
+	buckets      = []float64{0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 20, 30, 60, 120}
+	toolBuckets  = []float64{0.001, 0.01, 0.1, 0.5, 1, 2.5, 5, 10}
+	roundBuckets = []float64{0, 1, 2, 3, 4, 5}
+)
 
 var (
 	requests = promauto.NewCounterVec(prometheus.CounterOpts{
@@ -50,6 +54,20 @@ var (
 		Name: "llm_phase_seconds_total",
 		Help: "Time spent per phase (load, prefill, decode), by model.",
 	}, []string{"model", "phase"})
+	toolCalls = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "llm_tool_calls_total",
+		Help: "Tool executions by tool and outcome (ok or error).",
+	}, []string{"tool", "outcome"})
+	toolDuration = promauto.NewHistogramVec(prometheus.HistogramOpts{
+		Name:    "llm_tool_duration_seconds",
+		Help:    "Tool execution time by tool (fetch_url can take seconds; calculator takes microseconds).",
+		Buckets: toolBuckets,
+	}, []string{"tool"})
+	toolAgentRounds = promauto.NewHistogram(prometheus.HistogramOpts{
+		Name:    "llm_agent_rounds",
+		Help:    "Tool rounds a request needed (0 = answered directly).",
+		Buckets: roundBuckets,
+	})
 )
 
 // Middleware records request count, duration, TTFB and in-flight requests for every route.
@@ -134,4 +152,19 @@ func ObserveLLM(model string, s LLMStats) {
 	llmPhase.WithLabelValues(model, "load").Add(time.Duration(s.LoadDuration).Seconds())
 	llmPhase.WithLabelValues(model, "prefill").Add(time.Duration(s.PromptEvalDuration).Seconds())
 	llmPhase.WithLabelValues(model, "decode").Add(time.Duration(s.EvalDuration).Seconds())
+}
+
+// ObserveTool records one tool execution. tool must be a registered name (or "unknown").
+func ObserveTool(tool string, d time.Duration, err error) {
+	outcome := "ok"
+	if err != nil {
+		outcome = "error"
+	}
+	toolCalls.WithLabelValues(tool, outcome).Inc()
+	toolDuration.WithLabelValues(tool).Observe(d.Seconds())
+}
+
+// ObserveRounds records how many tool rounds one request needed.
+func ObserveRounds(n int) {
+	toolAgentRounds.Observe(float64(n))
 }

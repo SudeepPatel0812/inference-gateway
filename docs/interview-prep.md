@@ -264,6 +264,71 @@ tokens/s for capacity. Also watch in-flight requests — streams hold connection
 
 ---
 
+## Step 3 — Tool use / agent loop
+
+Measured here: "1234 × 5678" → `calculator` → 7,006,652 exact; "time in India" →
+`get_current_time` with `Asia/Kolkata`; "UTC time and 17 × 23" → both tools in one round;
+streaming without tools invented a date ("April 5, 2025").
+
+### Q31. How does tool calling work? Who executes the tool?
+**Answer:** The application sends tool definitions (name, description, JSON schema) with every
+request. The model's chat template renders them into the prompt as text; the model, trained on
+tool-use examples, may answer with a structured call (`<tool_call>{"name":…,"arguments":…}`),
+which the server parses into `tool_calls`. **The application executes the tool**, appends the
+result as a `role: "tool"` message, and calls the model again. The model only ever *requests*.
+
+### Q32. Why send tool definitions on every request instead of "preloading" them?
+**Answer:** Models are stateless and their weights are frozen — they only know what's in the
+current context. Fine-tuning teaches general tool-use *skill*, but specific schemas belong in
+context so they can change per request (per-user permissions, only relevant tools). The repeated
+cost is handled by **prefix/prompt caching**: identical system prompt + tool block is computed
+once and reused.
+
+### Q33. Describe the agent loop and its failure modes.
+**Answer:** `ask → if tool_calls: append the assistant message once, run each tool, append one
+tool message per call → ask again → repeat until a plain answer`. Failure modes: **infinite
+loops** (cap rounds — ours is `maxToolRounds = 5`, observed in the `llm_agent_rounds` histogram),
+**duplicated or misordered messages** (append the assistant order once, then results in order),
+**tool errors** (return them to the model as text so it can recover or explain, don't 500),
+**cost** (every round is another full model call over a growing context).
+
+### Q34. A tool takes a URL from the model. What can go wrong?
+**Answer:** **SSRF** — the model (steered by a user prompt) makes your server request internal
+addresses: other containers (`lb:11434` = Ollama here), admin panels, cloud metadata
+(`169.254.169.254`, which can leak credentials). Defenses: http(s) only; resolve the host
+**yourself** and reject loopback/private/link-local/CGNAT IPs **before connecting** (checking
+the hostname string isn't enough — DNS can point anywhere, and redirects dial again); no proxy;
+timeouts; response size caps; content-type allowlist. Tested here: the model happily called
+`fetch_url` on `http://lb:11434/api/tags`; the gateway blocked it. **Never rely on the model to refuse.**
+
+### Q35. How do you design safe tool arguments?
+**Answer:** Treat them as untrusted user input. Typed parameters with a JSON schema, an
+allowlist for enums (`op ∈ add/subtract/multiply/divide`), validation with clear errors, no
+`eval` of model-written expressions, no shell commands built from arguments (our first draft
+used `os/exec` on a model-supplied string — remote code execution). Go detail: JSON numbers decode
+to `float64` in `map[string]any`, so type-assert accordingly.
+
+### Q36. Why did the model invent a date, and how do tools fix it?
+**Answer:** Asked for something not in its training data or context, a model may **hallucinate**
+a plausible answer (here "April 5, 2025" in the streaming path, which had no tools). Tools and
+retrieval **ground** answers in real data; the same prompt via the tool-enabled path returned the
+real time. Also: return tool failures as clear text — the model then reports "blocked" or
+"HTTP 403" honestly instead of guessing.
+
+### Q37. An agent needs data from a website that blocks bots. What do you do?
+**Answer:** Prefer the site's **official API** over scraping — stable, structured, permitted.
+Stack Overflow pages return a Cloudflare challenge (403) to plain HTTP clients; the Stack
+Exchange API returns the same answers as JSON and worked through `fetch_url`. Don't bypass bot
+protection. Better still: a dedicated tool per source (cleaner output, fewer tokens) or a search tool.
+
+### Q38. What would you monitor for tools?
+**Answer:** Calls per tool and outcome (`llm_tool_calls_total{tool,outcome}`), tool latency
+(`llm_tool_duration_seconds`), rounds per request (`llm_agent_rounds`). Label tools by
+**registered name only** — map anything the model invents to `"unknown"`, or a misbehaving
+model creates unbounded time series (cardinality explosion driven by model output).
+
+---
+
 ## System design prompts to practise
 You'll be able to answer these by the end of the roadmap:
 - Design an LLM gateway for 1,000 internal users (→ steps 0, 2, 7, 8)
