@@ -12,6 +12,7 @@ import (
 type Config struct {
 	Port      string
 	OllamaURL string
+	StaticDir string // built chat UI (web/dist) to serve at /; empty = API only
 }
 
 // Load reads configuration from the process environment, loading a .env file
@@ -27,6 +28,7 @@ func Load() (Config, error) {
 	cfg := Config{
 		Port:      envOr("PORT", "8080"),
 		OllamaURL: envOr("OLLAMA_URL", "http://localhost:11434"),
+		StaticDir: os.Getenv("STATIC_DIR"),
 	}
 
 	return cfg, nil

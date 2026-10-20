@@ -16,5 +16,10 @@ func Routes(cfg config.Config) *http.ServeMux {
 	mux.HandleFunc("POST /completion", api.Completion(cfg.OllamaURL))
 	mux.HandleFunc("POST /v1/chat/completions", api.Chat(cfg.OllamaURL))
 
+	// "GET /" matches any GET no other pattern claims, so the API routes above still win.
+	if cfg.StaticDir != "" {
+		mux.Handle("GET /", http.FileServer(http.Dir(cfg.StaticDir)))
+	}
+
 	return mux
 }

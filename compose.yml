@@ -5,7 +5,7 @@ services:
       dockerfile: deploy/ollama.Dockerfile
     image: inference-gateway-ollama # models baked in; all replicas share this one image
     deploy:
-      replicas: 2 # qwen3:4b @ 8k ctx = 3.9 GB each; a 3rd would spill out of the 12 GB GPU
+      replicas: 1 # qwen3:4b @ 8k ctx = 3.9 GB each; a 3rd would spill out of the 12 GB GPU
       resources:
         reservations:
           devices:
@@ -15,6 +15,7 @@ services:
     environment:
       - OLLAMA_KEEP_ALIVE=30m
       - OLLAMA_NUM_PARALLEL=1 # one request per container; nginx spreads the load
+      - OLLAMA_MAX_LOADED_MODELS=1
     # no volume on /root/.ollama: it would hide the models baked into the image
 
   lb:
