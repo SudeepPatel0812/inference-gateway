@@ -71,11 +71,14 @@ Tick a box when the step works end to end. Interview questions for each step: [d
 
 ### 3. Tool use / agent loop
 Model requests a tool → gateway runs it → result goes back to the model → repeat until done.
-- [ ] Define a first tool (`get_current_time`) and send its JSON schema to Ollama in `tools`
-- [ ] Detect `tool_calls` in the model's reply, run the matching Go function
-- [ ] Append the result as a `{"role":"tool"}` message and call the model again
-- [ ] Loop until the model answers in plain text, with a max-iterations guard
-- [ ] Second tool with arguments (`calculator`) — validate arguments before running
+- [x] Define a first tool (`get_current_time`) and send its JSON schema to Ollama in `tools`
+- [x] Detect `tool_calls` in the model's reply, run the matching Go function
+- [x] Append the result as a `{"role":"tool"}` message and call the model again
+- [x] Loop until the model answers in plain text, with a max-iterations guard (`maxToolRounds`)
+- [x] Second tool with arguments (`calculator`) — validate arguments before running
+  - Tools so far (`internal/tools`): `get_current_time` (optional IANA `timezone`), `calculator`
+    (`a`, `b`, `op`), `fetch_url` (HTTP GET; blocks private/internal addresses against SSRF,
+    10 s timeout, 1 MB read limit, returns ≤ 4000 chars of text)
 - [ ] Metrics: tool calls by tool name and outcome, loop iterations per request
 
 ### 4. Tools

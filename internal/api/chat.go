@@ -3,12 +3,17 @@ package api
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 
 	"inference-gateway/internal/metrics"
+	"inference-gateway/internal/tools"
 )
+
+const maxToolRounds = 5
 
 type chatRequest struct {
 	Messages []message `json:"messages"`
@@ -18,8 +23,10 @@ type chatRequest struct {
 }
 
 type message struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
+	Role      string      `json:"role"`
+	Content   string      `json:"content"`
+	ToolCalls []toolsCall `json:"tool_calls,omitempty"`
+	ToolName  string      `json:"tool_name,omitempty"`
 }
 
 // choice and chatResponse follow OpenAI's response shape so existing clients and UIs work unchanged
@@ -34,11 +41,58 @@ type chatResponse struct {
 	Choices []choice `json:"choices"`
 }
 
+type toolsCall struct {
+	Function struct {
+		Name      string         `json:"name"`
+		Arguments map[string]any `json:"arguments"`
+	} `json:"function"`
+}
+
 func Chat(ollamaURL string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var in chatRequest
 		if err := json.NewDecoder(r.Body).Decode(&in); err != nil || in.Model == "" || len(in.Messages) == 0 {
 			http.Error(w, "need JSON with model and messages", http.StatusBadRequest)
+			return
+		}
+
+		if !in.Stream {
+			messages := in.Messages
+
+			reply, err := ask(r.Context(), ollamaURL, in.Model, in.Think, messages)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusBadGateway)
+				return
+			}
+
+			for round := 0; round < maxToolRounds && len(reply.Message.ToolCalls) > 0; round++ {
+				messages = append(messages, reply.Message)
+				for _, order := range reply.Message.ToolCalls {
+					result, runErr := tools.Run(order.Function.Name, order.Function.Arguments)
+					if runErr != nil {
+						result = "error: " + runErr.Error() // tell the model, so it can explain or recover
+					}
+					messages = append(messages, message{Role: "tool", ToolName: order.Function.Name, Content: result})
+				}
+
+				reply, err = ask(r.Context(), ollamaURL, in.Model, in.Think, messages)
+				if err != nil {
+					http.Error(w, err.Error(), http.StatusBadGateway)
+					return
+				}
+			}
+
+			if len(reply.Message.ToolCalls) > 0 {
+				http.Error(w, "model kept calling tools; gave up after max rounds", http.StatusInternalServerError)
+				return
+			}
+
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(chatResponse{
+				Model:   reply.Model,
+				Choices: []choice{{Message: reply.Message, FinishReason: reply.DoneReason}},
+			})
+
 			return
 		}
 
@@ -78,26 +132,7 @@ func Chat(ollamaURL string) http.HandlerFunc {
 			return
 		}
 
-		if in.Stream {
-			streamChat(w, resp.Body)
-			return
-		}
-
-		var out struct {
-			Model      string  `json:"model"`
-			Message    message `json:"message"`
-			DoneReason string  `json:"done_reason"`
-			metrics.LLMStats
-		}
-		if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
-			http.Error(w, "bad response from ollama", http.StatusBadGateway)
-			return
-		}
-		metrics.ObserveLLM(out.Model, out.LLMStats)
-		json.NewEncoder(w).Encode(chatResponse{
-			Model:   out.Model,
-			Choices: []choice{{Message: out.Message, FinishReason: out.DoneReason}},
-		})
+		streamChat(w, resp.Body)
 	}
 }
 
@@ -190,4 +225,53 @@ func writeEvent(w http.ResponseWriter, flusher http.Flusher, v any) error {
 	}
 	flusher.Flush() // without this, Go buffers and the client gets everything at the end
 	return nil
+}
+
+// ollamaReply is one non-streaming answer from Ollama.
+type ollamaReply struct {
+	Model      string  `json:"model"`
+	Message    message `json:"message"`
+	DoneReason string  `json:"done_reason"`
+	metrics.LLMStats
+}
+
+// ask sends the conversation to Ollama once (with the tool menu) and returns its reply.
+func ask(ctx context.Context, ollamaURL, model string, think bool, messages []message) (ollamaReply, error) {
+	var reply ollamaReply
+
+	body, err := json.Marshal(map[string]any{
+		"model":      model,
+		"messages":   messages,
+		"stream":     false,
+		"think":      think,
+		"keep_alive": "30m",
+		"options":    map[string]any{"num_ctx": 8192},
+		"tools":      tools.Definitions(), // the menu
+	})
+	if err != nil {
+		return reply, err
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, ollamaURL+"/api/chat", bytes.NewReader(body))
+	if err != nil {
+		return reply, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return reply, fmt.Errorf("ollama unreachable: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		msg, _ := io.ReadAll(resp.Body)
+		return reply, fmt.Errorf("ollama returned %d: %s", resp.StatusCode, msg)
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(&reply); err != nil {
+		return reply, fmt.Errorf("bad response from ollama: %w", err)
+	}
+	metrics.ObserveLLM(reply.Model, reply.LLMStats)
+	return reply, nil
 }
