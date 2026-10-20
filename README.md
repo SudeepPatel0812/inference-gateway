@@ -24,10 +24,26 @@ docker compose up -d --build   # first build bakes qwen3:4b-instruct into the Ol
 curl -X POST localhost:8080/completion -d '{"model":"qwen3:4b-instruct","prompt":"Say hi"}'
 ```
 
+**Chat UI** (`web/`, React, streams answers token by token):
+
+- **With Docker:** the gateway image builds the UI and serves it — open <http://localhost:8080>
+  after `docker compose up -d --build`.
+- **While editing the UI** (hot reload):
+
+```sh
+cd web
+npm install      # once
+npm run dev      # → http://localhost:5173 (proxies /v1 to the gateway on :8080)
+```
+
+Point it at another gateway with `GATEWAY_URL=http://host:port npm run dev`. `npm test` runs the
+SSE parser tests.
+
 | Env var      | Default                  | Purpose            |
 |--------------|--------------------------|--------------------|
 | `PORT`       | `8080`                   | gateway port       |
 | `OLLAMA_URL` | `http://localhost:11434` | where Ollama lives |
+| `STATIC_DIR` | *(empty)*                | folder with the built chat UI to serve at `/`; set to `/web` in the image |
 
 Dashboards: Grafana at <http://localhost:3000> (admin / admin to edit), Prometheus at <http://localhost:9090>.
 
@@ -108,5 +124,36 @@ Model requests a tool → gateway runs it → result goes back to the model → 
 - [ ] Rate limiting
 - [ ] Token-usage logging
 
+### 9. Distributed architecture
+Split the system into independent services, one container each, that talk to each other only
+over the network: each can be built, deployed, scaled and restarted on its own.
+
+```
+browser ──▶ frontend (nginx: static UI) ──/v1──▶ API gateway (Go) ──▶ model server (Ollama, GPU)
+                                                     │
+                                                     └──▶ database (Postgres: users, chats, messages)
+```
+
+- [ ] **Frontend service:** move the UI out of the gateway image into its own container (nginx serving
+      `web/dist`, proxying `/v1` to the gateway); the gateway goes back to API-only
+- [ ] **Database service:** Postgres container with a volume; schema for users, conversations,
+      messages; migrations run on deploy
+- [ ] **Server-side conversations:** gateway stores and loads history by conversation ID instead of
+      the client resending everything (see interview Q16)
+- [ ] **Service discovery & config:** services find each other by Docker DNS name via env vars
+      (`OLLAMA_URL`, `DATABASE_URL`), nothing hard-coded
+- [ ] **Health & startup order:** `/health` (liveness) and `/ready` (can reach DB + model server);
+      compose `healthcheck` + `depends_on: condition: service_healthy`
+- [ ] **Resilience for network calls:** timeouts on every call, retries with backoff for idempotent
+      ones, clear errors when a dependency is down (no hanging requests)
+- [ ] **Distributed tracing:** OpenTelemetry trace ID passed frontend → gateway → DB / model server,
+      viewed in Jaeger or Grafana Tempo, so one slow request can be followed across services
+- [ ] **Scale independently:** run several gateway replicas behind the load balancer (stateless, since
+      state lives in the DB); zero-downtime rolling restarts (see interview Q23)
+- [ ] **Network isolation:** separate Docker networks so only the gateway can reach the DB and the
+      model server; only the frontend is published to the host
+- [ ] **Later:** the same services on Kubernetes (Deployments, Services, probes, Secrets)
+
 ### Extras
-- [ ] Chat UI: Open WebUI container pointed at `/v1/chat/completions`
+- [x] Chat UI: own React app in `web/` with real-time streaming, stop button, markdown, time-to-first-token
+- [x] Serve the chat UI from Docker: built in the gateway image, served at `/` (`STATIC_DIR`)
